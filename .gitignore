@@ -1,0 +1,39 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+
+# Dataset and generated data
+data/*
+!data/.gitkeep
+
+# Trained models
+models/*
+!models/.gitkeep
+
+# Results and generated files
+results/*
+!results/.gitkeep
+
+# Video files
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# NumPy / ML generated files
+*.npy
+*.npz
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -13,11 +13,11 @@ from sklearn.preprocessing import LabelEncoder
 
 DATASET_ROOT = Path(r"D:\ISL-Dataset")
 METADATA_PATH = DATASET_ROOT / "metadata" / "dataset_metadata_clean.csv"
-MANIFEST_PATH = DATASET_ROOT / "extracted" / "extraction_manifest.csv"
-SEQUENCE_ROOT = DATASET_ROOT / "extracted" / "sequences"
-OUTPUT_ROOT = DATASET_ROOT / "extracted" / "processed"
+MANIFEST_PATH = DATASET_ROOT / "extracted" / "multimodal_extraction_manifest.csv"
+SEQUENCE_ROOT = DATASET_ROOT / "extracted" / "multimodal_sequences"
+OUTPUT_ROOT = DATASET_ROOT / "extracted" / "processed_multimodal"
 
-EXPECTED_SHAPE = (30, 126)
+EXPECTED_SHAPE = (30, 1662)
 
 
 def main():

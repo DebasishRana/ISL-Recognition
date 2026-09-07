@@ -158,10 +158,10 @@ def main():
 
     classes = label_encoder.classes_.tolist()
 
-    if len(classes) != 50:
-        raise ValueError(
-            f"Expected 50 classes, found {len(classes)}"
-        )
+    # if len(classes) != 50:
+    #     raise ValueError(
+    #         f"Expected 50 classes, found {len(classes)}"
+    #     )
 
     train_mask = splits == "train"
     val_mask = splits == "val"

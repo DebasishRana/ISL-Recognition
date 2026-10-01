@@ -1,12 +1,25 @@
 """
-Functionality: This module provides local text-to-speech functionality using Piper.
+Functionality:
+-------------
+This module provides asynchronous local text-to-speech
+using Piper.
 
+The TTSEngine class:
+1. Discovers available Piper voices.
+2. Allows voice selection.
+3. Accepts speech requests without blocking recognition.
+4. Runs Piper in a background worker.
+5. Plays generated speech independently.
+6. Prevents TTS from freezing the recognition loop.
+7. Stops active playback when requested.
 """
 
 from pathlib import Path
+import queue
 import subprocess
 import tempfile
 import sys
+import threading
 
 import winsound
 
@@ -14,7 +27,10 @@ import winsound
 class TTSEngine:
 
     def __init__(self):
-        self.project_root = Path(__file__).resolve().parents[1]
+
+        self.project_root = (
+            Path(__file__).resolve().parents[1]
+        )
 
         self.voice_directory = (
             self.project_root
@@ -29,7 +45,20 @@ class TTSEngine:
 
         self.voices = {}
         self.current_voice = None
+
         self.current_process = None
+        self.current_output = None
+
+        self.speech_queue = queue.Queue(
+            maxsize=1
+        )
+
+        self.stop_event = threading.Event()
+
+        self.worker = threading.Thread(
+            target=self._worker_loop,
+            daemon=True,
+        )
 
         self._discover_voices()
 
@@ -43,12 +72,16 @@ class TTSEngine:
             iter(self.voices)
         )
 
+        self.worker.start()
+
     def _discover_voices(self):
 
         self.voices.clear()
 
-        for model_path in self.voice_directory.rglob(
-            "*.onnx"
+        for model_path in (
+            self.voice_directory.rglob(
+                "*.onnx"
+            )
         ):
 
             config_path = Path(
@@ -58,9 +91,13 @@ class TTSEngine:
             if not config_path.exists():
                 continue
 
-            voice_name = model_path.stem
+            voice_name = (
+                model_path.stem
+            )
 
-            self.voices[voice_name] = {
+            self.voices[
+                voice_name
+            ] = {
                 "model": model_path,
                 "config": config_path,
             }
@@ -75,14 +112,21 @@ class TTSEngine:
 
         return self.current_voice
 
-    def set_voice(self, voice_name):
+    def set_voice(
+        self,
+        voice_name,
+    ):
 
         if voice_name not in self.voices:
+
             raise ValueError(
-                f"Voice not found: {voice_name}"
+                f"Voice not found: "
+                f"{voice_name}"
             )
 
-        self.current_voice = voice_name
+        self.current_voice = (
+            voice_name
+        )
 
     def speak(self, text):
 
@@ -94,15 +138,69 @@ class TTSEngine:
         if not text:
             return
 
-        if self.current_voice is None:
-            raise RuntimeError(
-                "No Piper voice selected."
+        try:
+
+            while True:
+
+                self.speech_queue.get_nowait()
+
+        except queue.Empty:
+
+            pass
+
+        try:
+
+            self.speech_queue.put_nowait(
+                text
             )
 
-        self.stop()
+        except queue.Full:
+
+            pass
+
+    def _worker_loop(self):
+
+        while not self.stop_event.is_set():
+
+            try:
+
+                text = (
+                    self.speech_queue.get(
+                        timeout=0.1
+                    )
+                )
+
+            except queue.Empty:
+
+                continue
+
+            try:
+
+                self._speak_blocking(
+                    text
+                )
+
+            except Exception as error:
+
+                print(
+                    "TTS error:",
+                    error,
+                )
+
+    def _speak_blocking(
+        self,
+        text,
+    ):
+
+        voice_name = (
+            self.current_voice
+        )
+
+        if voice_name is None:
+            return
 
         voice = self.voices[
-            self.current_voice
+            voice_name
         ]
 
         with tempfile.NamedTemporaryFile(
@@ -135,7 +233,12 @@ class TTSEngine:
                 stderr=subprocess.DEVNULL,
             )
 
-            self.current_process = output_path
+            if self.stop_event.is_set():
+                return
+
+            self.current_output = (
+                output_path
+            )
 
             winsound.PlaySound(
                 str(output_path),
@@ -144,26 +247,62 @@ class TTSEngine:
 
         finally:
 
-            if output_path.exists():
-                output_path.unlink()
+            winsound.PlaySound(
+                None,
+                winsound.SND_PURGE,
+            )
 
-            self.current_process = None
+            if output_path.exists():
+
+                try:
+
+                    output_path.unlink()
+
+                except PermissionError:
+
+                    pass
+
+            self.current_output = None
 
     def stop(self):
+
+        self.stop_event.set()
 
         winsound.PlaySound(
             None,
             winsound.SND_PURGE,
         )
 
-        if (
-            self.current_process is not None
-            and self.current_process.exists()
-        ):
-            self.current_process.unlink()
+        try:
 
-        self.current_process = None
+            while True:
+
+                self.speech_queue.get_nowait()
+
+        except queue.Empty:
+
+            pass
+
+        if (
+            self.current_output
+            is not None
+            and self.current_output.exists()
+        ):
+
+            try:
+
+                self.current_output.unlink()
+
+            except PermissionError:
+
+                pass
 
     def close(self):
 
         self.stop()
+
+        if self.worker.is_alive():
+
+            self.worker.join(
+                timeout=1.0
+            )

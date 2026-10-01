@@ -1,9 +1,19 @@
 """
-Functionality: This module provides real-time Indian Sign Language recognition.
+Functionality:
+-------------
+This module provides the real-time ISL recognition application.
 
+The application:
+1. Opens the webcam.
+2. Tracks hands, pose, and face landmarks.
+3. Extracts the unified multimodal feature vector.
+4. Sends features to RecognitionEngine.
+5. Displays recognition state and predictions.
+6. Logs committed signs.
+7. Speaks committed signs using Piper.
+8. Allows the user to switch between Piper voices.
 """
 
-from collections import deque
 from pathlib import Path
 import json
 import time
@@ -14,20 +24,24 @@ import tensorflow as tf
 
 from multimodal_tracker import MultimodalTracker
 from feature_extractor import FeatureExtractor
+from recognition_engine import RecognitionEngine
 from sign_logger import SignLogger
 from tts_engine import TTSEngine
 
 
-SEQUENCE_LENGTH = 30
 FEATURE_COUNT = 1662
 
 CONFIDENCE_THRESHOLD = 0.70
 STABILITY_WINDOW = 5
 INFERENCE_INTERVAL = 3
 
+SEQUENCE_LENGTH = 30
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-DATASET_ROOT = Path(r"D:\ISL-Dataset")
+DATASET_ROOT = Path(
+    r"D:\ISL-Dataset"
+)
 
 PROCESSED_ROOT = (
     DATASET_ROOT
@@ -76,7 +90,7 @@ def load_classes():
 
     if not isinstance(classes, list):
         raise ValueError(
-            "classes.json must contain a list of class names."
+            "classes.json must contain a list."
         )
 
     if not classes:
@@ -87,9 +101,14 @@ def load_classes():
     return classes
 
 
-def validate_model(model, classes):
+def validate_model(
+    model,
+    classes,
+):
 
-    output_classes = model.output_shape[-1]
+    output_classes = (
+        model.output_shape[-1]
+    )
 
     if output_classes != len(classes):
         raise ValueError(
@@ -98,20 +117,18 @@ def validate_model(model, classes):
             f"Classes: {len(classes)}"
         )
 
+    expected_shape = (
+        None,
+        SEQUENCE_LENGTH,
+        FEATURE_COUNT,
+    )
 
-def select_voice(tts, voice_index):
-
-    voices = tts.get_voices()
-
-    if not voices:
-        return voice_index
-
-    if 0 <= voice_index < len(voices):
-        tts.set_voice(
-            voices[voice_index]
+    if tuple(model.input_shape) != expected_shape:
+        raise ValueError(
+            "Unexpected model input shape. "
+            f"Model: {model.input_shape}, "
+            f"Expected: {expected_shape}"
         )
-
-    return voice_index
 
 
 def main():
@@ -129,20 +146,15 @@ def main():
     logger = SignLogger()
     tts = TTSEngine()
 
-    sequence_buffer = deque(
-        maxlen=SEQUENCE_LENGTH
-    )
-
-    timestamp_buffer = deque(
-        maxlen=SEQUENCE_LENGTH
-    )
-
-    prediction_history = deque(
-        maxlen=STABILITY_WINDOW
-    )
-
-    confidence_history = deque(
-        maxlen=STABILITY_WINDOW
+    engine = RecognitionEngine(
+        model=model,
+        classes=classes,
+        sequence_length=SEQUENCE_LENGTH,
+        feature_count=FEATURE_COUNT,
+        inference_interval=INFERENCE_INTERVAL,
+        stability_window=STABILITY_WINDOW,
+        confidence_threshold=CONFIDENCE_THRESHOLD,
+        release_window=3,
     )
 
     camera = cv2.VideoCapture(0)
@@ -150,6 +162,7 @@ def main():
     if not camera.isOpened():
 
         tracker.close()
+        tts.close()
 
         raise RuntimeError(
             "Could not open webcam."
@@ -170,14 +183,13 @@ def main():
     predicted_label = "Waiting..."
     confidence = 0.0
     stable_label = "Waiting..."
-    accepted_label = None
-    last_inference_frame = 0
-    frame_count = 0
-    voice_index = 0
+    state = "IDLE"
 
     voices = tts.get_voices()
+    voice_index = 0
 
     if voices:
+
         tts.set_voice(
             voices[voice_index]
         )
@@ -191,23 +203,29 @@ def main():
             if not success:
 
                 print(
-                    "Failed to read frame from webcam."
+                    "Failed to read frame "
+                    "from webcam."
                 )
 
                 break
 
-            frame = cv2.flip(
-                frame,
-                1,
-            )
+#flip image
+            # frame = cv2.flip(
+            #     frame,
+            #     1,
+            # )
+
+            timestamp = time.time()
 
             timestamp_ms = int(
-                time.time() * 1000
+                timestamp * 1000
             )
 
-            tracking_result = tracker.process(
-                frame,
-                timestamp_ms,
+            tracking_result = (
+                tracker.process(
+                    frame,
+                    timestamp_ms,
+                )
             )
 
             features = extractor.extract(
@@ -230,153 +248,74 @@ def main():
                     f"({FEATURE_COUNT},)"
                 )
 
-            sequence_buffer.append(
-                features
+            status = engine.update(
+                features,
+                timestamp,
             )
 
-            timestamp_buffer.append(
-                time.time()
+            state = status[
+                "state"
+            ]
+
+            predicted_label = (
+                status[
+                    "prediction"
+                ]
+                or "Waiting..."
             )
 
-            frame_count += 1
+            confidence = float(
+                status[
+                    "confidence"
+                ]
+            )
 
-            if (
-                len(sequence_buffer)
-                == SEQUENCE_LENGTH
-                and frame_count - last_inference_frame
-                >= INFERENCE_INTERVAL
-            ):
+            stable_label = (
+                status[
+                    "stable_prediction"
+                ]
+                or "None"
+            )
 
-                sequence = np.asarray(
-                    sequence_buffer,
-                    dtype=np.float32,
+            event = status[
+                "event"
+            ]
+
+            if event is not None:
+
+                print(
+                    f"Accepted sign: "
+                    f"{event.sign} "
+                    f"({event.confidence * 100:.1f}%)"
                 )
 
-                sequence = np.expand_dims(
-                    sequence,
-                    axis=0,
+                logger.log_sign(
+                    sign=event.sign,
+                    confidence=event.confidence,
+                    duration_seconds=(
+                        event.duration_seconds
+                    ),
+                    frame_count=(
+                        event.frame_count
+                    ),
+                    status="ACCEPTED",
                 )
 
-                probabilities = model.predict(
-                    sequence,
-                    verbose=0,
-                )[0]
-
-                predicted_index = int(
-                    np.argmax(probabilities)
+                tts.speak(
+                    event.sign
                 )
-
-                confidence = float(
-                    probabilities[
-                        predicted_index
-                    ]
-                )
-
-                if confidence >= CONFIDENCE_THRESHOLD:
-
-                    predicted_label = classes[
-                        predicted_index
-                    ]
-
-                    prediction_history.append(
-                        predicted_label
-                    )
-
-                    confidence_history.append(
-                        confidence
-                    )
-
-                else:
-
-                    predicted_label = "Uncertain"
-
-                    prediction_history.clear()
-                    confidence_history.clear()
-
-                if (
-                    len(prediction_history)
-                    == STABILITY_WINDOW
-                ):
-
-                    first_label = (
-                        prediction_history[0]
-                    )
-
-                    all_same = all(
-                        label == first_label
-                        for label in prediction_history
-                    )
-
-                    average_confidence = (
-                        sum(confidence_history)
-                        / len(confidence_history)
-                    )
-
-                    if (
-                        all_same
-                        and average_confidence
-                        >= CONFIDENCE_THRESHOLD
-                    ):
-
-                        stable_label = first_label
-
-                        if (
-                            stable_label
-                            != accepted_label
-                        ):
-
-                            duration_seconds = 0.0
-
-                            if len(timestamp_buffer) >= 2:
-
-                                duration_seconds = (
-                                    timestamp_buffer[-1]
-                                    - timestamp_buffer[0]
-                                )
-
-                            frame_count_for_log = (
-                                len(sequence_buffer)
-                            )
-
-                            logger.log_sign(
-                                stable_label,
-                                average_confidence,
-                                duration_seconds,
-                                frame_count_for_log,
-                                status="ACCEPTED",
-                            )
-
-                            tts.speak(
-                                stable_label
-                            )
-
-                            accepted_label = (
-                                stable_label
-                            )
-
-                            prediction_history.clear()
-                            confidence_history.clear()
-
-                last_inference_frame = (
-                    frame_count
-                )
-
-            if (
-                accepted_label is not None
-                and predicted_label != accepted_label
-                and predicted_label != "Uncertain"
-            ):
-
-                accepted_label = None
 
             current_time = time.time()
 
             fps = 1.0 / max(
-                current_time - previous_time,
+                current_time
+                - previous_time,
                 1e-6,
             )
 
-            previous_time = current_time
+            previous_time = (
+                current_time
+            )
 
             current_voice = (
                 tts.get_current_voice()
@@ -386,10 +325,11 @@ def main():
 
             cv2.putText(
                 frame,
-                f"Sign: {predicted_label}",
+                f"Prediction: "
+                f"{predicted_label}",
                 (30, 50),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                1.2,
+                1.0,
                 (0, 255, 0),
                 3,
                 cv2.LINE_AA,
@@ -397,10 +337,11 @@ def main():
 
             cv2.putText(
                 frame,
-                f"Confidence: {confidence * 100:.1f}%",
-                (30, 95),
+                f"Confidence: "
+                f"{confidence * 100:.1f}%",
+                (30, 90),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
+                0.75,
                 (255, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -408,8 +349,19 @@ def main():
 
             cv2.putText(
                 frame,
+                f"State: {state}",
+                (30, 130),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+            cv2.putText(
+                frame,
                 f"Stable: {stable_label}",
-                (30, 135),
+                (30, 170),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 (255, 255, 255),
@@ -419,19 +371,10 @@ def main():
 
             cv2.putText(
                 frame,
-                f"Voice: {current_voice}",
-                (30, 175),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-
-            cv2.putText(
-                frame,
-                f"Buffer: {len(sequence_buffer)}/{SEQUENCE_LENGTH}",
-                (30, 215),
+                f"Buffer: "
+                f"{engine.get_buffer_length()}/"
+                f"{SEQUENCE_LENGTH}",
+                (30, 210),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 (255, 255, 255),
@@ -442,7 +385,7 @@ def main():
             cv2.putText(
                 frame,
                 f"Classes: {len(classes)}",
-                (30, 255),
+                (30, 250),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 (255, 255, 255),
@@ -453,7 +396,7 @@ def main():
             cv2.putText(
                 frame,
                 f"FPS: {fps:.1f}",
-                (30, 295),
+                (30, 290),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 (255, 255, 255),
@@ -463,10 +406,21 @@ def main():
 
             cv2.putText(
                 frame,
-                "1-9: Voice | Q: Quit",
-                (30, 335),
+                f"Voice: {current_voice}",
+                (30, 330),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                0.65,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+            cv2.putText(
+                frame,
+                "1-9: Voice | Q: Quit",
+                (30, 370),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
                 (255, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -477,23 +431,37 @@ def main():
                 frame,
             )
 
-            key = cv2.waitKey(1) & 0xFF
+            key = (
+                cv2.waitKey(1)
+                & 0xFF
+            )
 
             if key == ord("q"):
                 break
 
-            if ord("1") <= key <= ord("9"):
+            if (
+                ord("1")
+                <= key
+                <= ord("9")
+            ):
 
                 selected_index = (
                     key - ord("1")
                 )
 
-                if selected_index < len(voices):
+                if (
+                    selected_index
+                    < len(voices)
+                ):
 
-                    voice_index = selected_index
+                    voice_index = (
+                        selected_index
+                    )
 
                     tts.set_voice(
-                        voices[voice_index]
+                        voices[
+                            voice_index
+                        ]
                     )
 
                     print(
@@ -504,8 +472,11 @@ def main():
     finally:
 
         camera.release()
+
         cv2.destroyAllWindows()
+
         tracker.close()
+
         tts.close()
 
 

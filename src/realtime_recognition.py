@@ -21,6 +21,7 @@ import time
 import cv2
 import numpy as np
 import tensorflow as tf
+import onnxruntime as ort
 
 from multimodal_tracker import MultimodalTracker
 from feature_extractor import FeatureExtractor
@@ -52,25 +53,52 @@ PROCESSED_ROOT = (
 MODEL_PATH = (
     PROJECT_ROOT
     / "models"
-    / "gru_multimodal.keras"
+    / "gru_multimodal.onnx"
 )
 
 CLASSES_PATH = (
-    PROCESSED_ROOT
+    PROJECT_ROOT
+    / "models"
     / "classes.json"
 )
 
-
 def load_model():
-
     if not MODEL_PATH.exists():
         raise FileNotFoundError(
             f"Model not found at: {MODEL_PATH}"
         )
 
-    return tf.keras.models.load_model(
-        MODEL_PATH
+    session = ort.InferenceSession(
+        str(MODEL_PATH),
+        providers=["CPUExecutionProvider"],
     )
+
+    input_name = session.get_inputs()[0].name
+    input_shape = (None, SEQUENCE_LENGTH, FEATURE_COUNT)
+    output_shape = (
+        None,
+        session.get_outputs()[0].shape[-1],
+    )
+
+    class ONNXModelAdapter:
+        def __init__(self):
+            self.session = session
+            self.input_name = input_name
+            self.input_shape = input_shape
+            self.output_shape = output_shape
+
+        def predict(self, sequence, verbose=0):
+            sequence = np.asarray(
+                sequence,
+                dtype=np.float32,
+            )
+
+            return self.session.run(
+                None,
+                {self.input_name: sequence},
+            )[0]
+
+    return ONNXModelAdapter()
 
 
 def load_classes():

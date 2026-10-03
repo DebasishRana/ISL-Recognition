@@ -21,7 +21,7 @@ import tempfile
 import sys
 import threading
 
-import winsound
+import platform
 
 
 class TTSEngine:
@@ -48,6 +48,8 @@ class TTSEngine:
 
         self.current_process = None
         self.current_output = None
+        self.playback_process = None
+        
 
         self.speech_queue = queue.Queue(
             maxsize=1
@@ -240,17 +242,26 @@ class TTSEngine:
                 output_path
             )
 
-            winsound.PlaySound(
-                str(output_path),
-                winsound.SND_FILENAME,
-            )
+            #CHANGE IN PLATFORM
+            if platform.system() == "Windows":
+                import winsound
+
+                winsound.PlaySound(
+                    str(output_path),
+                    winsound.SND_FILENAME,
+                )
+            else:
+                self.playback_process = subprocess.Popen(
+                    ["afplay", str(output_path)]
+                )
+            self.playback_process.wait()
+            self.playback_process = None
 
         finally:
 
-            winsound.PlaySound(
-                None,
-                winsound.SND_PURGE,
-            )
+            if self.current_process is not None:
+                self.current_process.terminate()
+                self.current_process = None
 
             if output_path.exists():
 
@@ -268,10 +279,11 @@ class TTSEngine:
 
         self.stop_event.set()
 
-        winsound.PlaySound(
-            None,
-            winsound.SND_PURGE,
-        )
+        if self.playback_process is not None:
+
+            self.playback_process.terminate()
+
+            self.playback_process = None
 
         try:
 

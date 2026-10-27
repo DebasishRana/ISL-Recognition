@@ -28,6 +28,11 @@ from feature_extractor import FeatureExtractor
 from recognition_engine import RecognitionEngine
 from sign_logger import SignLogger
 from tts_engine import TTSEngine
+from sign_activity_detector import (
+    SignActivityDetector,
+    SignActivityConfig,
+    SignActivityState,
+)
 
 
 FEATURE_COUNT = 1662
@@ -61,6 +66,13 @@ CLASSES_PATH = (
     / "models"
     / "classes.json"
 )
+
+LOCAL_CLASSES_PATH = (
+    PROJECT_ROOT
+    / "models"
+    / "classes.json"
+)
+
 
 def load_model():
     if not MODEL_PATH.exists():
@@ -103,13 +115,20 @@ def load_model():
 
 def load_classes():
 
-    if not CLASSES_PATH.exists():
+    target_path = (
+        CLASSES_PATH
+        if CLASSES_PATH.exists()
+        else LOCAL_CLASSES_PATH
+    )
+
+    if not target_path.exists():
         raise FileNotFoundError(
-            f"Class mapping not found at: {CLASSES_PATH}"
+            f"Class mapping not found at: {CLASSES_PATH} "
+            f"or {LOCAL_CLASSES_PATH}"
         )
 
     with open(
-        CLASSES_PATH,
+        target_path,
         "r",
         encoding="utf-8",
     ) as file:
@@ -173,6 +192,7 @@ def main():
     extractor = FeatureExtractor()
     logger = SignLogger()
     tts = TTSEngine()
+    activity_detector = SignActivityDetector()
 
     engine = RecognitionEngine(
         model=model,
@@ -212,6 +232,7 @@ def main():
     confidence = 0.0
     stable_label = "Waiting..."
     state = "IDLE"
+    activity_state = SignActivityState.IDLE
 
     voices = tts.get_voices()
     voice_index = 0
@@ -256,6 +277,13 @@ def main():
                 )
             )
 
+            activity = activity_detector.process(
+                tracking_result,
+                timestamp,
+            )
+
+            activity_state = activity["state"]
+
             features = extractor.extract(
                 tracking_result
             )
@@ -279,37 +307,47 @@ def main():
             status = engine.update(
                 features,
                 timestamp,
+                activity_state=activity_state,
             )
 
             state = status[
                 "state"
             ]
 
-            predicted_label = (
-                status[
-                    "prediction"
-                ]
-                or "Waiting..."
-            )
+            if activity_state == SignActivityState.IDLE:
+                predicted_label = "IDLE (No sign)"
+                confidence = 0.0
+                stable_label = "None"
+            elif activity_state == SignActivityState.POSSIBLE_SIGN:
+                predicted_label = "Detecting motion..."
+                confidence = 0.0
+                stable_label = "None"
+            else:
+                predicted_label = (
+                    status[
+                        "prediction"
+                    ]
+                    or "Waiting..."
+                )
 
-            confidence = float(
-                status[
-                    "confidence"
-                ]
-            )
+                confidence = float(
+                    status[
+                        "confidence"
+                    ]
+                )
 
-            stable_label = (
-                status[
-                    "stable_prediction"
-                ]
-                or "None"
-            )
+                stable_label = (
+                    status[
+                        "stable_prediction"
+                    ]
+                    or "None"
+                )
 
             event = status[
                 "event"
             ]
 
-            if event is not None:
+            if event is not None and activity_state == SignActivityState.ACTIVE_SIGN:
 
                 print(
                     f"Accepted sign: "
@@ -351,15 +389,34 @@ def main():
                 else "None"
             )
 
+            activity_color = (
+                (0, 255, 0)
+                if activity_state == SignActivityState.ACTIVE_SIGN
+                else (0, 255, 255)
+                if activity_state == SignActivityState.POSSIBLE_SIGN
+                else (180, 180, 180)
+            )
+
+            cv2.putText(
+                frame,
+                f"Activity: {activity_state.value} (v={activity['velocity']:.2f})",
+                (30, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                activity_color,
+                2,
+                cv2.LINE_AA,
+            )
+
             cv2.putText(
                 frame,
                 f"Prediction: "
                 f"{predicted_label}",
-                (30, 50),
+                (30, 75),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                1.0,
-                (0, 255, 0),
-                3,
+                0.9,
+                (0, 255, 0) if activity_state == SignActivityState.ACTIVE_SIGN else (180, 180, 180),
+                2,
                 cv2.LINE_AA,
             )
 
@@ -367,9 +424,9 @@ def main():
                 frame,
                 f"Confidence: "
                 f"{confidence * 100:.1f}%",
-                (30, 90),
+                (30, 110),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.75,
+                0.7,
                 (255, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -378,9 +435,9 @@ def main():
             cv2.putText(
                 frame,
                 f"State: {state}",
-                (30, 130),
+                (30, 145),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.75,
+                0.7,
                 (0, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -389,9 +446,9 @@ def main():
             cv2.putText(
                 frame,
                 f"Stable: {stable_label}",
-                (30, 170),
+                (30, 180),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                0.65,
                 (255, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -402,9 +459,9 @@ def main():
                 f"Buffer: "
                 f"{engine.get_buffer_length()}/"
                 f"{SEQUENCE_LENGTH}",
-                (30, 210),
+                (30, 215),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                0.65,
                 (255, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -415,7 +472,7 @@ def main():
                 f"Classes: {len(classes)}",
                 (30, 250),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                0.65,
                 (255, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -424,9 +481,9 @@ def main():
             cv2.putText(
                 frame,
                 f"FPS: {fps:.1f}",
-                (30, 290),
+                (30, 285),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                0.65,
                 (255, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -435,7 +492,7 @@ def main():
             cv2.putText(
                 frame,
                 f"Voice: {current_voice}",
-                (30, 330),
+                (30, 320),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.65,
                 (255, 255, 255),
@@ -446,7 +503,7 @@ def main():
             cv2.putText(
                 frame,
                 "1-9: Voice | Q: Quit",
-                (30, 370),
+                (30, 355),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.65,
                 (255, 255, 255),
